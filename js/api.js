@@ -1,8 +1,8 @@
 // js/api.js
 
-// Talk to the local Go proxy to avoid CORS.
-const SIGNIN_URL = '/signin';
-const GQL_URL    = '/graphql';
+// Direct endpoints (works on Vercel / any static host)
+const SIGNIN_URL = 'https://learn.reboot01.com/api/auth/signin';
+const GQL_URL    = 'https://learn.reboot01.com/api/graphql-engine/v1/graphql';
 
 /* ------------------------------------------------------------------ */
 /* Storage                                                            */
@@ -51,23 +51,23 @@ export function decodeJWT(token){
 /* ------------------------------------------------------------------ */
 /* Auth                                                               */
 /* ------------------------------------------------------------------ */
-// POST /signin with Basic auth -> upstream returns JWT (text)
+// POST signin with Basic auth -> upstream returns JWT (text)
 export async function signinBasic(identifier, password){
   const id = String(identifier || '').trim();
   const pw = String(password || '');
   if(!id || !pw) throw new Error('Please enter both identifier and password.');
 
-  // Build Basic header safely
   const credentials = btoaUtf8(`${id}:${pw}`);
 
   const res = await fetch(SIGNIN_URL, {
     method: 'POST',
-    headers: { 'Authorization': `Basic ${credentials}` }
+    headers: { 'Authorization': `Basic ${credentials}` },
+    mode: 'cors',
   });
 
   const raw = await res.text().catch(()=> '');
   if(!res.ok){
-    // Common: 401 invalid creds, 403 forbidden
+    // Common: 401 invalid creds, 403/4xx forbidden (CORS or policy)
     const msg = raw?.trim() || `Signin failed (HTTP ${res.status})`;
     throw new Error(msg);
   }
@@ -83,7 +83,7 @@ export async function signinBasic(identifier, password){
 /* ------------------------------------------------------------------ */
 /* GraphQL                                                            */
 /* ------------------------------------------------------------------ */
-// POST /graphql with Bearer -> returns { data, errors? }
+// POST GraphQL with Bearer -> returns { data, errors? }
 export async function gql(query, variables = {}){
   const token = getToken();
   if(!token) throw new Error('Missing token');
@@ -94,7 +94,8 @@ export async function gql(query, variables = {}){
       'Content-Type':'application/json',
       'Authorization': `Bearer ${token}`
     },
-    body: JSON.stringify({ query, variables })
+    body: JSON.stringify({ query, variables }),
+    mode: 'cors',
   });
 
   let body;
