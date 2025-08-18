@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>My Reboot01 Profile</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./style.css?v=4" />
+</head>
+<body>
+  <!-- SVG filters for goo/glow effect used by blobs -->
+  <svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+    <defs>
+      <filter id="blob-glow">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="12" result="blur"/>
+        <feColorMatrix in="blur" type="matrix"
+          values="1 0 0 0 0
+                  0 1 0 0 0
+                  0 0 1 0 0
+                  0 0 0 18 -7" result="goo"/>
+        <feBlend in="SourceGraphic" in2="goo"/>
+      </filter>
+    </defs>
+  </svg>
+
+  <!-- Chromatic floating blobs layer -->
+  <div class="blobs" id="blobs" aria-hidden="true"></div>
+
+  <!-- Animated gradient background -->
+  <div class="bg"></div>
+
+  <header class="container app-header">
+    <h1 class="brand">My Profile</h1>
+    <div class="header-actions">
+      <button id="logout-btn" class="ghost" hidden>Log out</button>
+    </div>
+  </header>
+
+  <!-- Login View (only one view is active at a time) -->
+  <main id="login-view" class="container view active" aria-hidden="false">
+    <section class="card entrance">
+      <h2>Sign in</h2>
+      <p class="muted">Use your platform username or email with password.</p>
+      <form id="login-form" autocomplete="on">
+        <label>
+          <span>Username or Email</span>
+          <input id="identifier" name="identifier" type="text" autocomplete="username" required />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="primary">Sign in</button>
+        <p id="login-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+  </main>
+
+  <!-- Profile View -->
+  <main id="profile-view" class="container view" aria-hidden="true">
+    <section class="grid">
+      <div class="card entrance">
+        <h2>Basic info</h2>
+        <dl class="kv">
+          <div><dt>Login</dt><dd id="u-login">—</dd></div>
+          <div><dt>Email</dt><dd id="u-email">—</dd></div>
+          <div><dt>User ID</dt><dd id="u-id">—</dd></div>
+          <div><dt>Total XP</dt><dd id="u-xp">—</dd></div>
+        </dl>
+      </div>
+
+      <div class="card entrance">
+        <h2>Latest results</h2>
+        <ul id="latest-results" class="list"></ul>
+        <p id="no-results" class="muted" hidden>No recent results.</p>
+      </div>
+    </section>
+
+    <section class="card entrance">
+      <h2>XP over time</h2>
+      <svg id="xp-over-time" width="640" height="240" role="img" aria-label="XP over time"></svg>
+      <p id="no-xp-time" class="muted" hidden>No XP yet to plot.</p>
+    </section>
+
+    <section class="card entrance">
+      <h2>XP by project</h2>
+      <svg id="xp-by-project" width="640" height="240" role="img" aria-label="XP by project"></svg>
+      <p id="no-xp-project" class="muted" hidden>No XP by project yet.</p>
+    </section>
+  </main>
+
+  <!-- Loading overlay -->
+  <div id="loading" class="loading hidden" aria-hidden="true">
+    <div class="spinner"></div>
+    <p>Loading your data…</p>
+  </div>
+
+  <!-- Toasts -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <!-- Visuals & App scripts -->
+  <script type="module" src="./js/bubbles.js?v=2"></script>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
