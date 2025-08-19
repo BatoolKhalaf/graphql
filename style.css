@@ -19,7 +19,7 @@ body{
   overflow-x:hidden;
 }
 
-/* Animated background gradient */
+/* Animated background gradient (very back) */
 .bg{
   position:fixed; inset:0;
   background: radial-gradient(60vmax 60vmax at 10% 10%, #1a2030 0%, transparent 60%),
@@ -115,10 +115,19 @@ button:disabled{opacity:.6; cursor:not-allowed}
   padding:8px 10px; border:1px dashed var(--border); border-radius:10px;
 }
 
-/* SVG */
-svg{
-  width:100%; height:auto; display:block;
-  border:1px solid var(--border); border-radius:12px; background:rgba(0,0,0,.15);
+/* ================= Charts: responsive & unclipped ================= */
+svg, .chart { overflow: visible; }   /* allow ticks/labels to show */
+.chart{
+  width:100%;
+  height:auto;
+  aspect-ratio:16 / 7;              /* nice height on mobile */
+}
+/* If you still use generic svg styling, keep it pretty */
+svg, .chart{
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:rgba(0,0,0,.15);
+  display:block;
 }
 
 /* Loading overlay */
@@ -149,25 +158,23 @@ svg{
 
 /* ========================= Chromatic floating blobs ========================= */
 .blobs{
-  position:fixed; inset:0; 
-  pointer-events:none; 
-  z-index:-1;
+  position:fixed; inset:0;
+  pointer-events:none;
+  z-index:-1;               /* above .bg, below content */
   filter: url(#blob-glow);
 }
 
 .blob{
   position:absolute; top:50%; left:50%;
-  /* sized by CSS vars set from JS */
   width: var(--sz, 260px); height: var(--sz, 260px);
   transform: translate(-50%,-50%) translate3d(var(--x,0), var(--y,0), 0) rotate(var(--rot,0deg));
-  border-radius: 38% 62% 55% 45% / 40% 35% 65% 60%; /* odd organic shape */
+  border-radius: 38% 62% 55% 45% / 40% 35% 65% 60%;
   opacity: .58;
   will-change: transform, filter, opacity;
   mix-blend-mode: screen;
   animation:
     blob-float var(--dur, 18s) ease-in-out infinite alternate,
     blob-hue   var(--huedur, 22s) linear infinite;
-  /* multicolor radial + conic gradients for chromatic edges */
   background:
     radial-gradient(120% 100% at 30% 30%, rgba(255,255,255,.35), rgba(255,255,255,0) 60%),
     conic-gradient(from 0deg,
@@ -181,24 +188,16 @@ svg{
 }
 
 @keyframes blob-float{
-  0%   { transform: translate(-50%,-50%) translate3d(calc(var(--x,0) - 12px), calc(var(--y,0) - 14px),0) rotate(0deg)    scale(1); }
-  100% { transform: translate(-50%,-50%) translate3d(calc(var(--x,0) + 12px), calc(var(--y,0) + 14px),0) rotate(9deg)    scale(1.04); }
+  0%   { transform: translate(-50%,-50%) translate3d(calc(var(--x,0) - 12px), calc(var(--y,0) - 14px),0) rotate(0deg) scale(1); }
+  100% { transform: translate(-50%,-50%) translate3d(calc(var(--x,0) + 12px), calc(var(--y,0) + 14px),0) rotate(9deg) scale(1.04); }
 }
+@keyframes blob-hue{ to { filter: hue-rotate(35deg) saturate(1.08); } }
 
-@keyframes blob-hue{
-  to { filter: hue-rotate(35deg) saturate(1.08); }
-}
+.blob.blob-parallax{ transition: transform .25s cubic-bezier(.2,.8,.2,1); }
 
-/* hover/interaction “lift” (applied by JS on mouse move) */
-.blob.blob-parallax{
-  transition: transform .25s cubic-bezier(.2,.8,.2,1);
-}
-
-/* Motion safety */
 @media (prefers-reduced-motion: reduce){
   .blob{ animation: none }
 }
 
-/* Optional: quick density switch using a data-attribute (set on .blobs) */
 .blobs[data-density="low"]  .blob{ opacity:.45 }
 .blobs[data-density="high"] .blob{ opacity:.66 }
