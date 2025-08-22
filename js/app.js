@@ -28,22 +28,6 @@ const noXPProject  = document.getElementById('no-xp-project');
 const loadingEl = document.getElementById('loading');
 const toastEl   = document.getElementById('toast');
 
-/* ----- Conservative dashboard filter (won't wipe everything) ----- */
-// Keep: only grade=1 AND object.type === "project"
-// Exclude: obvious audit-only paths
-const EXCLUDE_PATH_KEYWORDS = ['/audit'];
-
-function shouldIncludePassedProgress(p){
-  const type = (p?.object?.type || '').toLowerCase();
-  if (type !== 'project') return false;
-
-  const path = (p?.path || '').toLowerCase();
-  for (const k of EXCLUDE_PATH_KEYWORDS) {
-    if (path.includes(k)) return false;
-  }
-  return true;
-}
-
 /* ------------------------------ UX helpers --------------------------- */
 function show(view){
   if(view === 'login'){
@@ -173,7 +157,7 @@ async function loadProfile(){
       });
     }
 
-    // 3) Dashboard-style XP
+    // 3) Strict dashboard-style XP
     const token = getToken();
     const payload = decodeJWT(token);
     const userId = Number(payload?.sub || payload?.userId || user.id);
@@ -186,15 +170,10 @@ async function loadProfile(){
     const txs = xpData?.transaction ?? [];
     const passedAll = passedData?.progress ?? [];
 
-    // STEP A: Filter passed items conservatively
-    let passed = passedAll.filter(shouldIncludePassedProgress);
+    // Keep only: grade=1 and object.type === 'project'
+    const passed = passedAll.filter(p => (p?.object?.type || '').toLowerCase() === 'project');
 
-    // If we filtered out everything, relax the filter (allow all passed projects)
-    if (passed.length === 0) {
-      passed = passedAll.filter(p => (p?.object?.type || '').toLowerCase() === 'project');
-    }
-
-    // Build set/map from passed items
+    // Build set and pass-date map
     const passedSet = new Set();
     const passDateByObj = new Map();
     passed.forEach(p => {
@@ -204,7 +183,7 @@ async function loadProfile(){
       if (p.createdAt) passDateByObj.set(oid, p.createdAt);
     });
 
-    // STEP B: Max XP per objectId from transactions
+    // Max XP per objectId from transactions
     const maxXPByObj = new Map();
     txs.forEach(t => {
       const oid = Number(t.objectId);
@@ -214,33 +193,25 @@ async function loadProfile(){
       if (amt > prev) maxXPByObj.set(oid, amt);
     });
 
-    // STEP C: Sum max XP for passed objects only
+    // Sum only passed objects; NO FALLBACK
     let officialTotal = 0;
-    const officialEntries = []; // [{objectId, amount, passedAt}]
+    const officialEntries = [];
     maxXPByObj.forEach((maxAmt, oid) => {
       if (passedSet.has(oid)) {
         officialTotal += maxAmt;
-        officialEntries.push({ objectId: oid, amount: maxAmt, passedAt: passDateByObj.get(oid) });
+        const passedAt = passDateByObj.get(oid);
+        if (passedAt) {
+          officialEntries.push({ objectId: oid, amount: maxAmt, passedAt });
+        }
       }
     });
 
-    // LAST-RESORT fallback if still zero (campus rules unknown): sum of all maxXPByObj
-    if (officialTotal === 0 && maxXPByObj.size > 0) {
-      console.warn('[XP] Fallback: using ALL maxXPByObj (no pass filter)');
-      officialTotal = [...maxXPByObj.values()].reduce((a,b)=>a+b,0);
-      // fabricate entries (no pass dates) for charts to avoid blank UI
-      officialEntries.splice(0, officialEntries.length,
-        ...[...maxXPByObj.entries()].map(([oid,amt]) => ({objectId: oid, amount: amt, passedAt: null}))
-      );
-      toast('Note: XP filter relaxed to avoid zero. Adjust rules to match your dashboard.', 3500);
-    }
-
     uXP.textContent = fmtNum(officialTotal);
 
-    // XP over time (use pass date when available)
+    // XP over time: build strictly from entries that have a pass date
     const byDayOfficial = new Map();
     officialEntries.forEach(e => {
-      const day = toDay(e.passedAt || Date.now());
+      const day = toDay(e.passedAt);
       byDayOfficial.set(day, (byDayOfficial.get(day) || 0) + e.amount);
     });
     const seriesTime = [...byDayOfficial.entries()]
@@ -258,9 +229,11 @@ async function loadProfile(){
       });
     }else{
       noXPTime.hidden = false;
+      // also clear any prior render (optional)
+      svgXPTime.replaceChildren();
     }
 
-    // XP by project (official entries)
+    // XP by project: use strict official entries
     let bars = [];
     if(officialEntries.length){
       const ids = [...new Set(officialEntries.map(e => e.objectId))];
@@ -287,10 +260,16 @@ async function loadProfile(){
       });
     }else{
       noXPProject.hidden = false;
+      svgXPProject.replaceChildren();
     }
 
-    // Helpful console diagnostics (won't show to users)
-    console.debug('[XP] txs:', txs.length, 'passedAll:', passedAll.length, 'included passed:', passed.length, 'officialTotal:', officialTotal);
+    // Diagnostics for you (console only)
+    console.debug('[XP] txs:', txs.length,
+                  'passedAll:', passedAll.length,
+                  'strictPassed:', passed.length,
+                  'objectsWithMax:', maxXPByObj.size,
+                  'officialEntries:', officialEntries.length,
+                  'officialTotal:', officialTotal);
   } finally {
     isLoadingProfile = false;
   }
