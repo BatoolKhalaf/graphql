@@ -157,7 +157,7 @@ async function loadProfile(){
       });
     }
 
-    // 3) Dashboard-matching XP (strict, but without nested relations)
+    // 3) Dashboard-style XP (robust)
     const token = getToken();
     const payload = decodeJWT(token);
     const userId = Number(payload?.sub || payload?.userId || user.id);
@@ -171,62 +171,91 @@ async function loadProfile(){
     const txs = xpData?.transaction ?? [];
     const passedRows = passedData?.progress ?? [];
 
-    // Build per-object pass date (first pass date)
-    const passDateByObj = new Map(); // objectId -> createdAt (first pass)
-    passedRows.forEach(p => {
-      const oid = Number(p.objectId);
-      if (!Number.isFinite(oid)) return;
-      if (!passDateByObj.has(oid)) passDateByObj.set(oid, p.createdAt);
-    });
-
-    const passedIds = [...passDateByObj.keys()];
-    if (passedIds.length === 0) {
+    // If there are literally no transactions, show 0 and bail early
+    if (!txs.length) {
       uXP.textContent = '0';
-      // Clear charts
       svgXPTime.replaceChildren(); noXPTime.hidden = false;
       svgXPProject.replaceChildren(); noXPProject.hidden = false;
-      console.debug('[XP] No passed objects found for user.');
       return;
     }
 
-    // Get object types for passed ids
-    const objMeta = await gql(Q_OBJECT_NAMES, { ids: passedIds });
-    const typeById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.type || '').toLowerCase()]));
-    const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), o.name || String(o.id)]));
+    // Build aggregates per objectId from transactions
+    const firstTxDateByObj = new Map(); // earliest tx date → fallback pass date
+    const maxXPByObj       = new Map(); // max amount per object
+    const idsFromTx        = new Set();
 
-    // Keep only projects
-    const projectIds = passedIds.filter(id => typeById.get(id) === 'project');
-
-    // Build max XP per objectId from transactions
-    const maxXPByObj = new Map();
     txs.forEach(t => {
       const oid = Number(t.objectId);
       if (!Number.isFinite(oid)) return;
+      idsFromTx.add(oid);
+
       const amt = Number(t.amount || 0);
       const prev = maxXPByObj.get(oid) || 0;
       if (amt > prev) maxXPByObj.set(oid, amt);
+
+      const d = new Date(t.createdAt).getTime();
+      const prevD = firstTxDateByObj.get(oid) ?? Infinity;
+      if (d < prevD) firstTxDateByObj.set(oid, d);
     });
 
-    // Official total: sum max XP for passed projects only
-    let officialTotal = 0;
-    const officialEntries = []; // {objectId, amount, passedAt}
-    projectIds.forEach(oid => {
-      const amt = maxXPByObj.get(oid) || 0;
-      if (amt > 0) {
-        officialTotal += amt;
-        officialEntries.push({ objectId: oid, amount: amt, passedAt: passDateByObj.get(oid) });
+    // Resolve object types for ALL objectIds we actually have tx for
+    const allObjIds = [...idsFromTx];
+    const objMeta = allObjIds.length ? await gql(Q_OBJECT_NAMES, { ids: allObjIds }) : { object: [] };
+    const typeById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.type || '').toLowerCase()]));
+    const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), o.name || String(o.id)]));
+
+    // Keep only projects (as dashboards usually do)
+    const projectIdsFromTx = allObjIds.filter(id => typeById.get(id) === 'project');
+
+    // Build pass dates from progress (grade=1)
+    const passDateByObj = new Map(); // objectId -> pass date (ms)
+    passedRows.forEach(p => {
+      const oid = Number(p.objectId);
+      if (!Number.isFinite(oid)) return;
+      // only keep pass dates for objects we know are projects
+      if (typeById.get(oid) === 'project') {
+        const d = new Date(p.createdAt).getTime();
+        // choose earliest pass date
+        const prev = passDateByObj.get(oid) ?? Infinity;
+        if (d < prev) passDateByObj.set(oid, d);
       }
     });
 
+    // If we have zero project ids from object table (rare), use everything we have
+    const candidateIds = projectIdsFromTx.length ? projectIdsFromTx : allObjIds;
+
+    // Construct official entries:
+    // amount = max XP per object
+    // passedAt = progress pass date if present, else first transaction date (fallback)
+    const officialEntries = [];
+    let officialTotal = 0;
+
+    candidateIds.forEach(oid => {
+      const amt = maxXPByObj.get(oid) || 0;
+      if (amt <= 0) return;
+
+      // prefer a real pass date; fallback to earliest tx date so charts render sensibly
+      const passMs = passDateByObj.get(oid) ?? firstTxDateByObj.get(oid);
+      if (passMs == null) return;
+
+      officialEntries.push({
+        objectId: oid,
+        amount: amt,
+        passedAt: new Date(passMs).toISOString()
+      });
+      officialTotal += amt;
+    });
+
+    // Update total
     uXP.textContent = fmtNum(officialTotal);
 
-    // --- XP over time (by pass date) ---
-    const byDayOfficial = new Map(); // day -> sum
+    // --- XP over time (by pass/first date) ---
+    const byDay = new Map();
     officialEntries.forEach(e => {
       const day = toDay(e.passedAt);
-      byDayOfficial.set(day, (byDayOfficial.get(day) || 0) + e.amount);
+      byDay.set(day, (byDay.get(day) || 0) + e.amount);
     });
-    const seriesTime = [...byDayOfficial.entries()]
+    const seriesTime = [...byDay.entries()]
       .sort((a,b)=> a[0].localeCompare(b[0]))
       .map(([d,amt]) => ({ x: new Date(d).getTime(), y: amt, label: `${d}: ${amt} XP` }));
 
@@ -244,7 +273,7 @@ async function loadProfile(){
       svgXPTime.replaceChildren();
     }
 
-    // --- XP by project (official amounts) ---
+    // --- XP by project ---
     let bars = officialEntries.map(e => ({
       id: e.objectId,
       name: nameById.get(e.objectId) || String(e.objectId),
@@ -267,20 +296,19 @@ async function loadProfile(){
       svgXPProject.replaceChildren();
     }
 
-    // Diagnostics
+    // Diagnostics (open DevTools console to see)
     console.debug('[XP] txs:', txs.length,
-                  'passedRows:', passedRows.length,
-                  'passedIds:', passedIds.length,
-                  'projectIds:', projectIds.length,
-                  'officialEntries:', officialEntries.length,
-                  'officialTotal:', officialTotal);
+      'objectIdsFromTx:', allObjIds.length,
+      'projectsFromTx:', projectIdsFromTx.length,
+      'progressRows:', passedRows.length,
+      'officialEntries:', officialEntries.length,
+      'officialTotal:', officialTotal);
   } finally {
     isLoadingProfile = false;
   }
 }
 
 /* ------------------------------ resize re-render --------------------- */
-// Debounced re-render so charts adapt to viewport/rotation
 let rerenderTimer = null;
 window.addEventListener('resize', () => {
   if (loginView.classList.contains('active')) return; // not logged in
