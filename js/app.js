@@ -28,6 +28,10 @@ const noXPProject  = document.getElementById('no-xp-project');
 const loadingEl = document.getElementById('loading');
 const toastEl   = document.getElementById('toast');
 
+/* -------- Dashboard parity switches -------- */
+// Many dashboards count both projects + exercises (not audits/piscine/exams)
+const INCLUDED_TYPES = new Set(['project', 'exercise']); // <— changed here
+
 /* ------------------------------ UX helpers --------------------------- */
 function show(view){
   if(view === 'login'){
@@ -171,7 +175,6 @@ async function loadProfile(){
     const txs = xpData?.transaction ?? [];
     const passedRows = passedData?.progress ?? [];
 
-    // If there are literally no transactions, show 0 and bail early
     if (!txs.length) {
       uXP.textContent = '0';
       svgXPTime.replaceChildren(); noXPTime.hidden = false;
@@ -179,8 +182,8 @@ async function loadProfile(){
       return;
     }
 
-    // Build aggregates per objectId from transactions
-    const firstTxDateByObj = new Map(); // earliest tx date → fallback pass date
+    // Per-object aggregates from transactions
+    const firstTxDateByObj = new Map(); // earliest tx date
     const maxXPByObj       = new Map(); // max amount per object
     const idsFromTx        = new Set();
 
@@ -198,43 +201,35 @@ async function loadProfile(){
       if (d < prevD) firstTxDateByObj.set(oid, d);
     });
 
-    // Resolve object types for ALL objectIds we actually have tx for
+    // Resolve object types/names for all objectIds in transactions
     const allObjIds = [...idsFromTx];
     const objMeta = allObjIds.length ? await gql(Q_OBJECT_NAMES, { ids: allObjIds }) : { object: [] };
     const typeById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.type || '').toLowerCase()]));
     const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), o.name || String(o.id)]));
 
-    // Keep only projects (as dashboards usually do)
-    const projectIdsFromTx = allObjIds.filter(id => typeById.get(id) === 'project');
+    // Keep only ids whose type is included (project+exercise)
+    const includedIdsFromTx = allObjIds.filter(id => INCLUDED_TYPES.has(typeById.get(id)));
 
-    // Build pass dates from progress (grade=1)
+    // Pass dates from progress (grade=1), but only for included types
     const passDateByObj = new Map(); // objectId -> pass date (ms)
     passedRows.forEach(p => {
       const oid = Number(p.objectId);
       if (!Number.isFinite(oid)) return;
-      // only keep pass dates for objects we know are projects
-      if (typeById.get(oid) === 'project') {
-        const d = new Date(p.createdAt).getTime();
-        // choose earliest pass date
-        const prev = passDateByObj.get(oid) ?? Infinity;
-        if (d < prev) passDateByObj.set(oid, d);
-      }
+      if (!includedIdsFromTx.includes(oid)) return; // keep consistent with type filter
+      const d = new Date(p.createdAt).getTime();
+      const prev = passDateByObj.get(oid) ?? Infinity;
+      if (d < prev) passDateByObj.set(oid, d);
     });
 
-    // If we have zero project ids from object table (rare), use everything we have
-    const candidateIds = projectIdsFromTx.length ? projectIdsFromTx : allObjIds;
-
-    // Construct official entries:
-    // amount = max XP per object
-    // passedAt = progress pass date if present, else first transaction date (fallback)
+    // Build official entries (dedup via max per object)
     const officialEntries = [];
     let officialTotal = 0;
 
-    candidateIds.forEach(oid => {
+    includedIdsFromTx.forEach(oid => {
       const amt = maxXPByObj.get(oid) || 0;
       if (amt <= 0) return;
 
-      // prefer a real pass date; fallback to earliest tx date so charts render sensibly
+      // Prefer pass date; fallback to earliest tx date
       const passMs = passDateByObj.get(oid) ?? firstTxDateByObj.get(oid);
       if (passMs == null) return;
 
@@ -246,10 +241,9 @@ async function loadProfile(){
       officialTotal += amt;
     });
 
-    // Update total
     uXP.textContent = fmtNum(officialTotal);
 
-    // --- XP over time (by pass/first date) ---
+    // --- XP over time ---
     const byDay = new Map();
     officialEntries.forEach(e => {
       const day = toDay(e.passedAt);
@@ -273,7 +267,7 @@ async function loadProfile(){
       svgXPTime.replaceChildren();
     }
 
-    // --- XP by project ---
+    // --- XP by project/exercise ---
     let bars = officialEntries.map(e => ({
       id: e.objectId,
       name: nameById.get(e.objectId) || String(e.objectId),
@@ -296,10 +290,10 @@ async function loadProfile(){
       svgXPProject.replaceChildren();
     }
 
-    // Diagnostics (open DevTools console to see)
+    // Diagnostics — open DevTools console to compare
     console.debug('[XP] txs:', txs.length,
-      'objectIdsFromTx:', allObjIds.length,
-      'projectsFromTx:', projectIdsFromTx.length,
+      'allObjIds:', allObjIds.length,
+      'includedIdsFromTx:', includedIdsFromTx.length,
       'progressRows:', passedRows.length,
       'officialEntries:', officialEntries.length,
       'officialTotal:', officialTotal);
