@@ -11,7 +11,7 @@ query Me {
 }
 `;
 
-// With arguments
+// With arguments (kept for reference/other features)
 export const Q_OBJECT_BY_ID = /* GraphQL */`
 query OneObject($id: Int!) {
   object(where: { id: { _eq: $id }}) {
@@ -22,7 +22,7 @@ query OneObject($id: Int!) {
 }
 `;
 
-// Nested
+// Nested (latest results for the feed)
 export const Q_RESULTS_WITH_USER = /* GraphQL */`
 query ResultsWithUser {
   result(limit: 5, order_by: {createdAt: desc}) {
@@ -35,7 +35,7 @@ query ResultsWithUser {
 }
 `;
 
-// XP for charts
+// All XP transactions for a user (we'll dedupe and filter in app.js)
 export const Q_XP = /* GraphQL */`
 query XP($userId: Int!) {
   transaction(
@@ -57,6 +57,18 @@ query ObjectNames($ids: [Int!]) {
     id
     name
     type
+  }
+}
+`;
+
+// NEW: passed objects (grade = 1) — gives pass date per object
+export const Q_PASSED_OBJECTS = /* GraphQL */`
+query PassedObjects($userId: Int!) {
+  progress(
+    where: { userId: { _eq: $userId }, grade: { _eq: 1 } }
+  ) {
+    objectId
+    createdAt
   }
 }
 `;
