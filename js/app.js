@@ -1,6 +1,6 @@
 // js/app.js
 import { signinBasic, saveToken, getToken, clearToken, decodeJWT, gql } from './api.js';
-import { Q_ME, Q_RESULTS_WITH_USER, Q_XP, Q_OBJECT_NAMES } from './queries.js';
+import { Q_ME, Q_RESULTS_WITH_USER, Q_XP, Q_OBJECT_NAMES, Q_PASSED_OBJECTS } from './queries.js';
 import { renderLineChart, renderBarChart } from './charts.js';
 
 const loginView   = document.getElementById('login-view');
@@ -67,7 +67,8 @@ function toast(message, ms=2500){
   }, ms);
 }
 
-function fmtNum(n){ return new Intl.NumberFormat().format(n); }
+const nf = new Intl.NumberFormat();
+function fmtNum(n){ return nf.format(n); }
 function toDay(ts){ return new Date(ts).toISOString().slice(0,10); }
 function isMobile(){ return window.matchMedia('(max-width: 600px)').matches; }
 
@@ -128,7 +129,7 @@ async function loadProfile(){
   if (isLoadingProfile) return;
   isLoadingProfile = true;
   try{
-    // 1) Who am I (simple query)
+    // 1) Who am I
     const me = await gql(Q_ME);
     const user = me?.user?.[0];
     if(!user) throw new Error('Failed to load user.');
@@ -137,7 +138,7 @@ async function loadProfile(){
     uEmail.textContent = user.email ?? '—';
     uId.textContent    = user.id ?? '—';
 
-    // 2) Latest results (nested user)
+    // 2) Latest results (feed)
     const resultsData = await gql(Q_RESULTS_WITH_USER);
     const results = resultsData?.result ?? [];
     latestList.replaceChildren();
@@ -156,23 +157,63 @@ async function loadProfile(){
       });
     }
 
-    // 3) XP transactions (with args) using userId from JWT
+    // 3) Dashboard-matching XP
+    //    - Use all XP transactions for the user (Q_XP)
+    //    - Use passed objects (grade=1) from progress (Q_PASSED_OBJECTS)
+    //    - For each objectId, keep MAX(transaction.amount)
+    //    - Sum only passed objectIds
     const token = getToken();
     const payload = decodeJWT(token);
-    const userId = Number(payload?.sub || payload?.userId || user.id); // fallbacks
-    const xpData = await gql(Q_XP, { userId });
+    const userId = Number(payload?.sub || payload?.userId || user.id);
+
+    const [xpData, passedData] = await Promise.all([
+      gql(Q_XP, { userId }),
+      gql(Q_PASSED_OBJECTS, { userId })
+    ]);
+
     const txs = xpData?.transaction ?? [];
+    const passed = passedData?.progress ?? [];
 
-    const totalXP = txs.reduce((acc,t)=> acc + (t.amount||0), 0);
-    uXP.textContent = fmtNum(totalXP);
-
-    // XP over time
-    const byDay = new Map(); // day -> sum
-    txs.forEach(t => {
-      const day = toDay(t.createdAt);
-      byDay.set(day, (byDay.get(day)||0) + (t.amount||0));
+    // Set/map of passed objects and their pass dates
+    const passedSet = new Set();
+    const passDateByObj = new Map();
+    passed.forEach(p => {
+      if (p?.objectId != null) {
+        const oid = Number(p.objectId);
+        passedSet.add(oid);
+        if (p.createdAt) passDateByObj.set(oid, p.createdAt);
+      }
     });
-    const seriesTime = [...byDay.entries()]
+
+    // Per-object max XP seen in transactions
+    const maxXPByObj = new Map(); // objectId -> max amount
+    txs.forEach(t => {
+      const oid = Number(t.objectId);
+      if (!Number.isFinite(oid)) return;
+      const amt = Number(t.amount || 0);
+      const prev = maxXPByObj.get(oid) || 0;
+      if (amt > prev) maxXPByObj.set(oid, amt);
+    });
+
+    // Official total = sum of max XP for PASSED objects only
+    let officialTotal = 0;
+    const officialEntries = []; // [{objectId, amount, passedAt}]
+    maxXPByObj.forEach((maxAmt, oid) => {
+      if (passedSet.has(oid)) {
+        officialTotal += maxAmt;
+        officialEntries.push({ objectId: oid, amount: maxAmt, passedAt: passDateByObj.get(oid) });
+      }
+    });
+
+    uXP.textContent = fmtNum(officialTotal);
+
+    // XP over time (dashboard style): add each object's max XP on its pass date
+    const byDayOfficial = new Map(); // day -> sum
+    officialEntries.forEach(e => {
+      const day = toDay(e.passedAt || Date.now());
+      byDayOfficial.set(day, (byDayOfficial.get(day) || 0) + e.amount);
+    });
+    const seriesTime = [...byDayOfficial.entries()]
       .sort((a,b)=> a[0].localeCompare(b[0]))
       .map(([d,amt]) => ({ x: new Date(d).getTime(), y: amt, label: `${d}: ${amt} XP` }));
 
@@ -189,21 +230,18 @@ async function loadProfile(){
       noXPTime.hidden = false;
     }
 
-    // XP by project
-    const byProject = new Map(); // objectId -> sum
-    txs.forEach(t => {
-      const key = Number(t.objectId);
-      if(!Number.isFinite(key)) return;
-      byProject.set(key, (byProject.get(key)||0) + (t.amount||0));
-    });
-
+    // XP by project (dashboard style) = those official per-object values
     let bars = [];
-    if(byProject.size){
-      const ids = [...byProject.keys()];
-      const names = await gql(Q_OBJECT_NAMES, { ids });
-      const nameMap = new Map(names?.object?.map(o => [o.id, o.name]) || []);
-      bars = ids.map(id => ({
-        id, name: nameMap.get(id) || String(id), sum: byProject.get(id)
+    if(officialEntries.length){
+      const ids = officialEntries.map(e => e.objectId);
+      const uniqueIds = [...new Set(ids)];
+      const names = await gql(Q_OBJECT_NAMES, { ids: uniqueIds });
+      const nameMap = new Map((names?.object || []).map(o => [o.id, o.name]));
+
+      bars = officialEntries.map(e => ({
+        id: e.objectId,
+        name: nameMap.get(e.objectId) || String(e.objectId),
+        sum: e.amount
       }))
       .sort((a,b)=> b.sum - a.sum)
       .slice(0, 16);
