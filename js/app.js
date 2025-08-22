@@ -29,8 +29,8 @@ const loadingEl = document.getElementById('loading');
 const toastEl   = document.getElementById('toast');
 
 /* -------- Dashboard parity switches -------- */
-// Many dashboards count both projects + exercises (not audits/piscine/exams)
-const INCLUDED_TYPES = new Set(['project', 'exercise']); // <— changed here
+const INCLUDED_TYPES = new Set(['project','exercise']);
+const EXCLUDED_PATH_KEYWORDS = ['piscine', '/audit', 'exam', 'checkpoint', 'raid'];
 
 /* ------------------------------ UX helpers --------------------------- */
 function show(view){
@@ -75,6 +75,28 @@ const nf = new Intl.NumberFormat();
 function fmtNum(n){ return nf.format(n); }
 function toDay(ts){ return new Date(ts).toISOString().slice(0,10); }
 function isMobile(){ return window.matchMedia('(max-width: 600px)').matches; }
+
+/* -------------------------- prefix detection ------------------------- */
+// Extracts a root like "/madere/div-01" from a full path "/madere/div-01/graphql"
+function rootOf(path){
+  if(!path) return null;
+  const parts = String(path).split('/').filter(Boolean); // ["madere","div-01","graphql"]
+  if(parts.length < 2) return null;
+  return `/${parts[0]}/${parts[1]}`;
+}
+function detectPrimaryPrefix(paths){
+  const counts = new Map();
+  for(const p of paths){
+    const low = (p||'').toLowerCase();
+    if(EXCLUDED_PATH_KEYWORDS.some(k => low.includes(k))) continue;
+    const root = rootOf(low);
+    if(!root) continue;
+    counts.set(root, (counts.get(root)||0)+1);
+  }
+  if(!counts.size) return null;
+  // pick most frequent root
+  return [...counts.entries()].sort((a,b)=> b[1]-a[1])[0][0];
+}
 
 /* ------------------------------ init --------------------------------- */
 document.addEventListener('DOMContentLoaded', async () => {
@@ -161,31 +183,60 @@ async function loadProfile(){
       });
     }
 
-    // 3) Dashboard-style XP (robust)
+    // 3) Dashboard-style XP (main track only)
     const token = getToken();
     const payload = decodeJWT(token);
     const userId = Number(payload?.sub || payload?.userId || user.id);
 
-    // Load transactions and passed objects
     const [xpData, passedData] = await Promise.all([
-      gql(Q_XP, { userId }),
-      gql(Q_PASSED_OBJECTS, { userId })
+      gql(Q_XP, { userId }),           // transactions: amount, objectId, createdAt, path
+      gql(Q_PASSED_OBJECTS, { userId })// progress: objectId, createdAt, path (grade=1)
     ]);
 
-    const txs = xpData?.transaction ?? [];
-    const passedRows = passedData?.progress ?? [];
+    const txsAll = xpData?.transaction ?? [];
+    const passedRowsAll = passedData?.progress ?? [];
 
-    if (!txs.length) {
+    if (!txsAll.length) {
       uXP.textContent = '0';
       svgXPTime.replaceChildren(); noXPTime.hidden = false;
       svgXPProject.replaceChildren(); noXPProject.hidden = false;
       return;
     }
 
-    // Per-object aggregates from transactions
-    const firstTxDateByObj = new Map(); // earliest tx date
-    const maxXPByObj       = new Map(); // max amount per object
+    // Detect primary root prefix from transactions
+    const primaryPrefix = detectPrimaryPrefix(txsAll.map(t => t.path));
+    // If detection fails, we’ll use a heuristic fallback from an earlier example
+    const prefix = primaryPrefix || '/madere/div-01';
+
+    // Filter transactions to primary track and remove excluded keywords
+    const txs = txsAll.filter(t => {
+      const p = (t.path||'').toLowerCase();
+      if(!p.startsWith(prefix)) return false;
+      if(EXCLUDED_PATH_KEYWORDS.some(k => p.includes(k))) return false;
+      return true;
+    });
+
+    // Filter passed rows to same primary track (so dates match dashboard)
+    const passedRows = passedRowsAll.filter(p => {
+      const path = (p.path||'').toLowerCase();
+      if(!path.startsWith(prefix)) return false;
+      if(EXCLUDED_PATH_KEYWORDS.some(k => path.includes(k))) return false;
+      return true;
+    });
+
+    if (!txs.length) {
+      // No transactions in this track; show 0 but keep UI stable
+      uXP.textContent = '0';
+      svgXPTime.replaceChildren(); noXPTime.hidden = false;
+      svgXPProject.replaceChildren(); noXPProject.hidden = false;
+      console.debug('[XP] No transactions under prefix', prefix, 'Detected from data:', primaryPrefix);
+      return;
+    }
+
+    // Aggregates per objectId from filtered transactions
     const idsFromTx        = new Set();
+    const firstTxDateByObj = new Map(); // earliest tx date per object
+    const maxXPByObj       = new Map(); // max transaction amount per object
 
     txs.forEach(t => {
       const oid = Number(t.objectId);
@@ -193,57 +244,57 @@ async function loadProfile(){
       idsFromTx.add(oid);
 
       const amt = Number(t.amount || 0);
-      const prev = maxXPByObj.get(oid) || 0;
-      if (amt > prev) maxXPByObj.set(oid, amt);
+      if (amt > (maxXPByObj.get(oid) || 0)) maxXPByObj.set(oid, amt);
 
-      const d = new Date(t.createdAt).getTime();
-      const prevD = firstTxDateByObj.get(oid) ?? Infinity;
-      if (d < prevD) firstTxDateByObj.set(oid, d);
+      const ts = new Date(t.createdAt).getTime();
+      const prev = firstTxDateByObj.get(oid) ?? Infinity;
+      if (ts < prev) firstTxDateByObj.set(oid, ts);
     });
 
-    // Resolve object types/names for all objectIds in transactions
     const allObjIds = [...idsFromTx];
+
+    // Resolve object types/names for these ids
     const objMeta = allObjIds.length ? await gql(Q_OBJECT_NAMES, { ids: allObjIds }) : { object: [] };
     const typeById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.type || '').toLowerCase()]));
     const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), o.name || String(o.id)]));
 
-    // Keep only ids whose type is included (project+exercise)
-    const includedIdsFromTx = allObjIds.filter(id => INCLUDED_TYPES.has(typeById.get(id)));
+    // Keep only ids of included types (project + exercise)
+    const includedIds = allObjIds.filter(id => INCLUDED_TYPES.has(typeById.get(id)));
 
-    // Pass dates from progress (grade=1), but only for included types
-    const passDateByObj = new Map(); // objectId -> pass date (ms)
+    // Build pass dates (grade=1) for included ids on same track
+    const passDateByObj = new Map(); // objectId -> ms
     passedRows.forEach(p => {
       const oid = Number(p.objectId);
       if (!Number.isFinite(oid)) return;
-      if (!includedIdsFromTx.includes(oid)) return; // keep consistent with type filter
-      const d = new Date(p.createdAt).getTime();
+      if (!includedIds.includes(oid)) return; // only for included object types
+      const ts = new Date(p.createdAt).getTime();
       const prev = passDateByObj.get(oid) ?? Infinity;
-      if (d < prev) passDateByObj.set(oid, d);
+      if (ts < prev) passDateByObj.set(oid, ts);
     });
 
-    // Build official entries (dedup via max per object)
+    // Compute official entries & total
     const officialEntries = [];
     let officialTotal = 0;
 
-    includedIdsFromTx.forEach(oid => {
+    includedIds.forEach(oid => {
       const amt = maxXPByObj.get(oid) || 0;
       if (amt <= 0) return;
 
-      // Prefer pass date; fallback to earliest tx date
-      const passMs = passDateByObj.get(oid) ?? firstTxDateByObj.get(oid);
-      if (passMs == null) return;
+      // Prefer pass date (grade=1); fallback to earliest tx date so charts render steadily
+      const ts = passDateByObj.get(oid) ?? firstTxDateByObj.get(oid);
+      if (ts == null) return;
 
       officialEntries.push({
         objectId: oid,
         amount: amt,
-        passedAt: new Date(passMs).toISOString()
+        passedAt: new Date(ts).toISOString()
       });
       officialTotal += amt;
     });
 
     uXP.textContent = fmtNum(officialTotal);
 
-    // --- XP over time ---
+    // --- XP over time (by pass/first date) ---
     const byDay = new Map();
     officialEntries.forEach(e => {
       const day = toDay(e.passedAt);
@@ -290,11 +341,11 @@ async function loadProfile(){
       svgXPProject.replaceChildren();
     }
 
-    // Diagnostics — open DevTools console to compare
-    console.debug('[XP] txs:', txs.length,
-      'allObjIds:', allObjIds.length,
-      'includedIdsFromTx:', includedIdsFromTx.length,
-      'progressRows:', passedRows.length,
+    // Diagnostics — open DevTools console
+    console.debug('[XP] prefix:', prefix,
+      'txsAll:', txsAll.length, 'txsFiltered:', txs.length,
+      'passedAll:', passedRowsAll.length, 'passedFiltered:', passedRows.length,
+      'includedIds:', includedIds.length,
       'officialEntries:', officialEntries.length,
       'officialTotal:', officialTotal);
   } finally {
