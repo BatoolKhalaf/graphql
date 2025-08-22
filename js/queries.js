@@ -46,6 +46,7 @@ query XP($userId: Int!) {
     amount
     objectId
     createdAt
+    path
   }
 }
 `;
@@ -61,14 +62,21 @@ query ObjectNames($ids: [Int!]) {
 }
 `;
 
-// NEW: passed objects (grade = 1) — gives pass date per object
-export const Q_PASSED_OBJECTS = /* GraphQL */`
-query PassedObjects($userId: Int!) {
+/*
+ * NEW: Passed objects with details so we can mimic dashboard rules:
+ * - grade = 1 (validated)
+ * - include object { type } to restrict to "project"
+ * - include progress.path to exclude piscine/exam/checkpoint etc
+ */
+export const Q_PASSED_OBJECTS_DETAILED = /* GraphQL */`
+query PassedObjectsDetailed($userId: Int!) {
   progress(
     where: { userId: { _eq: $userId }, grade: { _eq: 1 } }
   ) {
     objectId
     createdAt
+    path
+    object { id name type }
   }
 }
 `;
