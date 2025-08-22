@@ -11,7 +11,7 @@ query Me {
 }
 `;
 
-// With arguments (kept for reference)
+// With arguments (kept for reference/other features)
 export const Q_OBJECT_BY_ID = /* GraphQL */`
 query OneObject($id: Int!) {
   object(where: { id: { _eq: $id }}) {
@@ -22,7 +22,7 @@ query OneObject($id: Int!) {
 }
 `;
 
-// Latest results list
+// Nested (latest results for the feed)
 export const Q_RESULTS_WITH_USER = /* GraphQL */`
 query ResultsWithUser {
   result(limit: 5, order_by: {createdAt: desc}) {
@@ -35,7 +35,7 @@ query ResultsWithUser {
 }
 `;
 
-// All XP transactions for a user (we'll dedupe per objectId)
+// All XP transactions for a user (we'll dedupe and filter in app.js)
 export const Q_XP = /* GraphQL */`
 query XP($userId: Int!) {
   transaction(
@@ -51,7 +51,7 @@ query XP($userId: Int!) {
 }
 `;
 
-// Resolve object names for a set of ids
+// Resolve object names/types for a set of ids
 export const Q_OBJECT_NAMES = /* GraphQL */`
 query ObjectNames($ids: [Int!]) {
   object(where: { id: { _in: $ids }}) {
@@ -62,16 +62,17 @@ query ObjectNames($ids: [Int!]) {
 }
 `;
 
-// Passed objects (grade = 1) with object type & pass date
-export const Q_PASSED_OBJECTS_DETAILED = /* GraphQL */`
-query PassedObjectsDetailed($userId: Int!) {
+// Passed objects (grade = 1), without relying on nested object relation
+export const Q_PASSED_OBJECTS = /* GraphQL */`
+query PassedObjects($userId: Int!) {
   progress(
     where: { userId: { _eq: $userId }, grade: { _eq: 1 } }
+    order_by: { createdAt: asc }
+    limit: 10000
   ) {
     objectId
     createdAt
     path
-    object { id name type }
   }
 }
 `;
