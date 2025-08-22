@@ -1,6 +1,6 @@
 // js/app.js
 import { signinBasic, saveToken, getToken, clearToken, decodeJWT, gql } from './api.js';
-import { Q_ME, Q_RESULTS_WITH_USER, Q_XP, Q_OBJECT_NAMES, Q_PASSED_OBJECTS } from './queries.js';
+import { Q_ME, Q_RESULTS_WITH_USER, Q_XP, Q_OBJECT_NAMES, Q_PASSED_OBJECTS_DETAILED } from './queries.js';
 import { renderLineChart, renderBarChart } from './charts.js';
 
 const loginView   = document.getElementById('login-view');
@@ -27,6 +27,20 @@ const noXPProject  = document.getElementById('no-xp-project');
 
 const loadingEl = document.getElementById('loading');
 const toastEl   = document.getElementById('toast');
+
+/* ----- Dashboard matching knobs ----- */
+/*
+ * These keywords are excluded if found in progress.path (case-insensitive).
+ * Adjust if your campus counts some of these differently.
+ */
+const EXCLUDE_PATH_KEYWORDS = [
+  'piscine',     // piscine-go, piscine-js, etc.
+  'exam',        // exams
+  'checkpoint',  // checkpoints
+  'raid',        // raids
+  '/audit',      // audit-only paths
+  'quiz'         // quizzes if present
+];
 
 /* ------------------------------ UX helpers --------------------------- */
 function show(view){
@@ -123,6 +137,20 @@ loginForm.addEventListener('submit', async (e) => {
   }
 });
 
+/* ------------------------------ helpers for dashboard parity -------- */
+function shouldIncludePassedProgress(p){
+  // Must be a "project"
+  const type = (p?.object?.type || '').toLowerCase();
+  if (type !== 'project') return false;
+
+  // Exclude based on path keywords
+  const path = (p?.path || '').toLowerCase();
+  for (const k of EXCLUDE_PATH_KEYWORDS) {
+    if (path.includes(k)) return false;
+  }
+  return true;
+}
+
 /* ------------------------------ data load ---------------------------- */
 let isLoadingProfile = false;
 async function loadProfile(){
@@ -158,35 +186,34 @@ async function loadProfile(){
     }
 
     // 3) Dashboard-matching XP
-    //    - Use all XP transactions for the user (Q_XP)
-    //    - Use passed objects (grade=1) from progress (Q_PASSED_OBJECTS)
-    //    - For each objectId, keep MAX(transaction.amount)
-    //    - Sum only passed objectIds
     const token = getToken();
     const payload = decodeJWT(token);
     const userId = Number(payload?.sub || payload?.userId || user.id);
 
+    // Load all transactions + passed items with details
     const [xpData, passedData] = await Promise.all([
       gql(Q_XP, { userId }),
-      gql(Q_PASSED_OBJECTS, { userId })
+      gql(Q_PASSED_OBJECTS_DETAILED, { userId })
     ]);
 
     const txs = xpData?.transaction ?? [];
-    const passed = passedData?.progress ?? [];
+    const passedAll = passedData?.progress ?? [];
 
-    // Set/map of passed objects and their pass dates
+    // Filter passed objects to match dashboard rules
+    const passed = passedAll.filter(shouldIncludePassedProgress);
+
+    // Build set and pass-date map of included objects
     const passedSet = new Set();
     const passDateByObj = new Map();
     passed.forEach(p => {
-      if (p?.objectId != null) {
-        const oid = Number(p.objectId);
-        passedSet.add(oid);
-        if (p.createdAt) passDateByObj.set(oid, p.createdAt);
-      }
+      const oid = Number(p.objectId);
+      if (!Number.isFinite(oid)) return;
+      passedSet.add(oid);
+      if (p.createdAt) passDateByObj.set(oid, p.createdAt);
     });
 
-    // Per-object max XP seen in transactions
-    const maxXPByObj = new Map(); // objectId -> max amount
+    // For each objectId, keep MAX transaction.amount (dedupe)
+    const maxXPByObj = new Map();
     txs.forEach(t => {
       const oid = Number(t.objectId);
       if (!Number.isFinite(oid)) return;
@@ -195,7 +222,7 @@ async function loadProfile(){
       if (amt > prev) maxXPByObj.set(oid, amt);
     });
 
-    // Official total = sum of max XP for PASSED objects only
+    // Official total: sum of max amounts for included + passed objects
     let officialTotal = 0;
     const officialEntries = []; // [{objectId, amount, passedAt}]
     maxXPByObj.forEach((maxAmt, oid) => {
@@ -205,10 +232,10 @@ async function loadProfile(){
       }
     });
 
-    uXP.textContent = fmtNum(officialTotal);
+    uXP.textContent = fmtNum(officialTotal); // dashboard-style total
 
-    // XP over time (dashboard style): add each object's max XP on its pass date
-    const byDayOfficial = new Map(); // day -> sum
+    // XP over time: add each object's max XP on its pass date
+    const byDayOfficial = new Map();
     officialEntries.forEach(e => {
       const day = toDay(e.passedAt || Date.now());
       byDayOfficial.set(day, (byDayOfficial.get(day) || 0) + e.amount);
@@ -230,12 +257,11 @@ async function loadProfile(){
       noXPTime.hidden = false;
     }
 
-    // XP by project (dashboard style) = those official per-object values
+    // XP by project: use officialEntries (max per object)
     let bars = [];
     if(officialEntries.length){
-      const ids = officialEntries.map(e => e.objectId);
-      const uniqueIds = [...new Set(ids)];
-      const names = await gql(Q_OBJECT_NAMES, { ids: uniqueIds });
+      const ids = [...new Set(officialEntries.map(e => e.objectId))];
+      const names = await gql(Q_OBJECT_NAMES, { ids });
       const nameMap = new Map((names?.object || []).map(o => [o.id, o.name]));
 
       bars = officialEntries.map(e => ({
