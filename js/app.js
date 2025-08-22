@@ -28,30 +28,10 @@ const noXPProject  = document.getElementById('no-xp-project');
 const loadingEl = document.getElementById('loading');
 const toastEl   = document.getElementById('toast');
 
-/* -------- Dashboard parity switches -------- */
-const INCLUDED_TYPES_ALWAYS = new Set(['project']);            // always count projects
-const EXCLUDED_PATH_KEYWORDS = ['exam', 'checkpoint', 'raid', '/audit']; // never count these
-const PISCINE_KEYWORD = 'piscine';                             // allow piscine items (in name or path)
-
-/* -------------------------- prefix detection ------------------------- */
-// Extract a root like "/madere/div-01" from a full path "/madere/div-01/graphql"
-function rootOf(path){
-  if(!path) return null;
-  const parts = String(path).split('/').filter(Boolean); // ["madere","div-01","graphql"]
-  if(parts.length < 2) return null;
-  return `/${parts[0]}/${parts[1]}`;
-}
-function detectPrimaryPrefix(paths){
-  const counts = new Map();
-  for(const p of paths){
-    const low = (p||'').toLowerCase();
-    const root = rootOf(low);
-    if(!root) continue;
-    counts.set(root, (counts.get(root)||0)+1);
-  }
-  if(!counts.size) return null;
-  return [...counts.entries()].sort((a,b)=> b[1]-a[1])[0][0];
-}
+/* -------- Dashboard parity switches (prefix removed) -------- */
+const ALWAYS_INCLUDE_TYPES = new Set(['project']);
+const EXCLUDE_KEYWORDS = ['exam', 'checkpoint', 'raid', '/audit']; // never count these
+const PISCINE_KEYWORD = 'piscine';                                 // do count piscines
 
 /* ------------------------------ UX helpers --------------------------- */
 function show(view){
@@ -182,7 +162,7 @@ async function loadProfile(){
       });
     }
 
-    // 3) Dashboard-style XP
+    // 3) Dashboard-style XP (no prefix filter)
     const token = getToken();
     const payload = decodeJWT(token);
     const userId = Number(payload?.sub || payload?.userId || user.id);
@@ -202,29 +182,15 @@ async function loadProfile(){
       return;
     }
 
-    // Detect primary root prefix from transactions; fallback keeps UI sane
-    const primaryPrefix = detectPrimaryPrefix(txsAll.map(t => t.path));
-    const prefix = primaryPrefix || '/madere/div-01';
-
-    // Filter out “global” noise (exam/checkpoint/raid/audit) on both datasets
-    const filteredTxsAll = txsAll.filter(t => {
+    // Global exclusion (exam/checkpoint/raid/audit) — applied to both sets
+    const txs = txsAll.filter(t => {
       const p = (t.path||'').toLowerCase();
-      if(EXCLUDED_PATH_KEYWORDS.some(k => p.includes(k))) return false;
-      return true;
+      return !EXCLUDE_KEYWORDS.some(k => p.includes(k));
     });
-    const filteredPassedAll = passedRowsAll.filter(p => {
+    const passedRows = passedRowsAll.filter(p => {
       const path = (p.path||'').toLowerCase();
-      if(EXCLUDED_PATH_KEYWORDS.some(k => path.includes(k))) return false;
-      return true;
+      return !EXCLUDE_KEYWORDS.some(k => path.includes(k));
     });
-
-    // Keep only items belonging to the detected main track prefix
-    const txs = filteredTxsAll.filter(t => (t.path||'').toLowerCase().startsWith(prefix));
-    const passedRows = filteredPassedAll.filter(p => (p.path||'').toLowerCase().startsWith(prefix));
-
-    // If this zeroes out, keep filtered (no prefix) to avoid dropping piscine from other roots
-    const txsWork = txs.length ? txs : filteredTxsAll;
-    const passedWork = passedRows.length ? passedRows : filteredPassedAll;
 
     // Aggregates per objectId from transactions
     const idsFromTx        = new Set();
@@ -232,7 +198,7 @@ async function loadProfile(){
     const maxXPByObj       = new Map(); // max transaction amount per object
     const samplePathByObj  = new Map(); // a representative path per object
 
-    txsWork.forEach(t => {
+    txs.forEach(t => {
       const oid = Number(t.objectId);
       if (!Number.isFinite(oid)) return;
       idsFromTx.add(oid);
@@ -252,11 +218,12 @@ async function loadProfile(){
     // Resolve object types/names
     const objMeta = allObjIds.length ? await gql(Q_OBJECT_NAMES, { ids: allObjIds }) : { object: [] };
     const typeById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.type || '').toLowerCase()]));
-    const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.name || '').toLowerCase()]));
+    const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.name || '')]));
+    const nameLowerById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.name || '').toLowerCase()]));
 
     // Pass dates (grade=1), keep earliest per object
     const passDateByObj = new Map(); // objectId -> ms
-    passedWork.forEach(p => {
+    passedRows.forEach(p => {
       const oid = Number(p.objectId);
       if (!Number.isFinite(oid)) return;
       const ts = new Date(p.createdAt).getTime();
@@ -264,26 +231,25 @@ async function loadProfile(){
       if (ts < prev) passDateByObj.set(oid, ts);
     });
 
-    // Inclusion rule that matches your dashboard:
+    // Inclusion rule (matches your dashboard):
     //  - include all projects
-    //  - include piscine items (name or path contains "piscine")
-    //  - exclude exam/checkpoint/raid/audit (already removed above)
+    //  - include piscines (name or path contains "piscine")
+    //  - exclude exam/checkpoint/raid/audit (already excluded above)
     //  - exclude other exercises by default
     function includeObject(oid){
       const type = typeById.get(oid);
-      const name = nameById.get(oid) || '';
-      const path = samplePathByObj.get(oid) || '';
+      const nameLower = (nameLowerById.get(oid) || '');
+      const pathLower = (samplePathByObj.get(oid) || '');
 
-      if (INCLUDED_TYPES_ALWAYS.has(type)) return true; // all projects
-      const looksPiscine = name.includes(PISCINE_KEYWORD) || path.includes(PISCINE_KEYWORD);
-      if (looksPiscine) return true;                     // allow piscines
-      // everything else (exercises not piscine) -> exclude
-      return false;
+      if (ALWAYS_INCLUDE_TYPES.has(type)) return true; // all projects
+      const looksPiscine = nameLower.includes(PISCINE_KEYWORD) || pathLower.includes(PISCINE_KEYWORD);
+      if (looksPiscine) return true;                   // allow piscine items
+      return false;                                    // everything else excluded
     }
 
     const includedIds = allObjIds.filter(includeObject);
 
-    // Build official entries
+    // Build official entries (dedup via max per object)
     const officialEntries = [];
     let officialTotal = 0;
 
@@ -305,7 +271,7 @@ async function loadProfile(){
 
     uXP.textContent = fmtNum(officialTotal);
 
-    // --- XP over time (stacked by pass/first date) ---
+    // --- XP over time (by pass/first date) ---
     const byDay = new Map();
     officialEntries.forEach(e => {
       const day = toDay(e.passedAt);
@@ -329,10 +295,10 @@ async function loadProfile(){
       svgXPTime.replaceChildren();
     }
 
-    // --- XP by project/piscine item ---
+    // --- XP by item (project/piscine) ---
     let bars = officialEntries.map(e => ({
       id: e.objectId,
-      name: (nameById.get(e.objectId) || String(e.objectId)).replace(/\bproject—|\bpiscine—/g, ''),
+      name: (nameById.get(e.objectId) || String(e.objectId)).replace(/\bproject—|\bpiscine—/gi, ''),
       sum: e.amount
     }))
     .sort((a,b)=> b.sum - a.sum)
@@ -352,10 +318,11 @@ async function loadProfile(){
       svgXPProject.replaceChildren();
     }
 
-    // Diagnostics — open DevTools console to verify
-    console.debug('[XP] prefix:', prefix,
-      'txsAll:', txsAll.length, 'txsUsed:', txsWork.length,
-      'passedAll:', passedRowsAll.length, 'passedUsed:', passedWork.length,
+    // Diagnostics — open DevTools console
+    console.debug('[XP] txsAll:', txsAll.length,
+      'txsUsed:', txs.length,
+      'passedAll:', passedRowsAll.length,
+      'passedUsed:', passedRows.length,
       'includedIds:', includedIds.length,
       'officialEntries:', officialEntries.length,
       'officialTotal:', officialTotal);
