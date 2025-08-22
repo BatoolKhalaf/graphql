@@ -271,7 +271,7 @@ async function loadProfile(){
       officialTotal += amt;
     });
 
-    uXP.textContent = fmtNum(officialTotal);
+    uXP.textContent = Math.round(officialTotal / 1000) + ' kB';
 
     // --- XP over time (by pass/first date) ---
     const byDay = new Map();
