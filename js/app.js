@@ -28,10 +28,9 @@ const noXPProject  = document.getElementById('no-xp-project');
 const loadingEl = document.getElementById('loading');
 const toastEl   = document.getElementById('toast');
 
-/* -------- Dashboard parity switches (prefix removed) -------- */
-const ALWAYS_INCLUDE_TYPES = new Set(['project']);
-const EXCLUDE_KEYWORDS = ['exam', 'checkpoint', 'raid', '/audit']; // never count these
-const PISCINE_KEYWORD = 'piscine';                                 // do count piscines
+/* -------- Dashboard parity switches -------- */
+const EXCLUDE_KEYWORDS = ['exam', 'checkpoint', 'raid', '/audit']; // always drop
+const PISCINE_KEYWORD = 'piscine';                                  // allow piscine root project only
 
 /* ------------------------------ UX helpers --------------------------- */
 function show(view){
@@ -162,7 +161,7 @@ async function loadProfile(){
       });
     }
 
-    // 3) Dashboard-style XP (no prefix filter)
+    // 3) Dashboard-style XP (projects + piscine root project only)
     const token = getToken();
     const payload = decodeJWT(token);
     const userId = Number(payload?.sub || payload?.userId || user.id);
@@ -182,7 +181,7 @@ async function loadProfile(){
       return;
     }
 
-    // Global exclusion (exam/checkpoint/raid/audit) — applied to both sets
+    // Global exclusion (exam/checkpoint/raid/audit)
     const txs = txsAll.filter(t => {
       const p = (t.path||'').toLowerCase();
       return !EXCLUDE_KEYWORDS.some(k => p.includes(k));
@@ -196,7 +195,7 @@ async function loadProfile(){
     const idsFromTx        = new Set();
     const firstTxDateByObj = new Map(); // earliest tx date per object
     const maxXPByObj       = new Map(); // max transaction amount per object
-    const samplePathByObj  = new Map(); // a representative path per object
+    const samplePathByObj  = new Map(); // representative path per object
 
     txs.forEach(t => {
       const oid = Number(t.objectId);
@@ -218,7 +217,7 @@ async function loadProfile(){
     // Resolve object types/names
     const objMeta = allObjIds.length ? await gql(Q_OBJECT_NAMES, { ids: allObjIds }) : { object: [] };
     const typeById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.type || '').toLowerCase()]));
-    const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.name || '')]));
+    const rawNameById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.name || '')]));
     const nameLowerById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.name || '').toLowerCase()]));
 
     // Pass dates (grade=1), keep earliest per object
@@ -231,20 +230,21 @@ async function loadProfile(){
       if (ts < prev) passDateByObj.set(oid, ts);
     });
 
-    // Inclusion rule (matches your dashboard):
-    //  - include all projects
-    //  - include piscines (name or path contains "piscine")
-    //  - exclude exam/checkpoint/raid/audit (already excluded above)
-    //  - exclude other exercises by default
+    // Include rule:
+    //  - include normal projects (type === 'project' and NOT piscine)
+    //  - include piscine ROOT project (type === 'project' and name/path contains 'piscine')
+    //  - exclude everything else (all exercises)
     function includeObject(oid){
       const type = typeById.get(oid);
       const nameLower = (nameLowerById.get(oid) || '');
       const pathLower = (samplePathByObj.get(oid) || '');
 
-      if (ALWAYS_INCLUDE_TYPES.has(type)) return true; // all projects
+      if (type !== 'project') return false; // exercises excluded
+
       const looksPiscine = nameLower.includes(PISCINE_KEYWORD) || pathLower.includes(PISCINE_KEYWORD);
-      if (looksPiscine) return true;                   // allow piscine items
-      return false;                                    // everything else excluded
+      // If it's a project and piscine -> include (root project)
+      // If it's a project and not piscine -> include (normal projects)
+      return true;
     }
 
     const includedIds = allObjIds.filter(includeObject);
@@ -295,10 +295,10 @@ async function loadProfile(){
       svgXPTime.replaceChildren();
     }
 
-    // --- XP by item (project/piscine) ---
+    // --- XP by item (project + piscine root) ---
     let bars = officialEntries.map(e => ({
       id: e.objectId,
-      name: (nameById.get(e.objectId) || String(e.objectId)).replace(/\bproject—|\bpiscine—/gi, ''),
+      name: (rawNameById.get(e.objectId) || String(e.objectId)).replace(/\bproject—|\bpiscine—/gi, ''),
       sum: e.amount
     }))
     .sort((a,b)=> b.sum - a.sum)
