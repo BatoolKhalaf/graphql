@@ -29,8 +29,29 @@ const loadingEl = document.getElementById('loading');
 const toastEl   = document.getElementById('toast');
 
 /* -------- Dashboard parity switches -------- */
-const INCLUDED_TYPES = new Set(['project','exercise']);
-const EXCLUDED_PATH_KEYWORDS = ['piscine', '/audit', 'exam', 'checkpoint', 'raid'];
+const INCLUDED_TYPES_ALWAYS = new Set(['project']);            // always count projects
+const EXCLUDED_PATH_KEYWORDS = ['exam', 'checkpoint', 'raid', '/audit']; // never count these
+const PISCINE_KEYWORD = 'piscine';                             // allow piscine items (in name or path)
+
+/* -------------------------- prefix detection ------------------------- */
+// Extract a root like "/madere/div-01" from a full path "/madere/div-01/graphql"
+function rootOf(path){
+  if(!path) return null;
+  const parts = String(path).split('/').filter(Boolean); // ["madere","div-01","graphql"]
+  if(parts.length < 2) return null;
+  return `/${parts[0]}/${parts[1]}`;
+}
+function detectPrimaryPrefix(paths){
+  const counts = new Map();
+  for(const p of paths){
+    const low = (p||'').toLowerCase();
+    const root = rootOf(low);
+    if(!root) continue;
+    counts.set(root, (counts.get(root)||0)+1);
+  }
+  if(!counts.size) return null;
+  return [...counts.entries()].sort((a,b)=> b[1]-a[1])[0][0];
+}
 
 /* ------------------------------ UX helpers --------------------------- */
 function show(view){
@@ -75,28 +96,6 @@ const nf = new Intl.NumberFormat();
 function fmtNum(n){ return nf.format(n); }
 function toDay(ts){ return new Date(ts).toISOString().slice(0,10); }
 function isMobile(){ return window.matchMedia('(max-width: 600px)').matches; }
-
-/* -------------------------- prefix detection ------------------------- */
-// Extracts a root like "/madere/div-01" from a full path "/madere/div-01/graphql"
-function rootOf(path){
-  if(!path) return null;
-  const parts = String(path).split('/').filter(Boolean); // ["madere","div-01","graphql"]
-  if(parts.length < 2) return null;
-  return `/${parts[0]}/${parts[1]}`;
-}
-function detectPrimaryPrefix(paths){
-  const counts = new Map();
-  for(const p of paths){
-    const low = (p||'').toLowerCase();
-    if(EXCLUDED_PATH_KEYWORDS.some(k => low.includes(k))) continue;
-    const root = rootOf(low);
-    if(!root) continue;
-    counts.set(root, (counts.get(root)||0)+1);
-  }
-  if(!counts.size) return null;
-  // pick most frequent root
-  return [...counts.entries()].sort((a,b)=> b[1]-a[1])[0][0];
-}
 
 /* ------------------------------ init --------------------------------- */
 document.addEventListener('DOMContentLoaded', async () => {
@@ -183,7 +182,7 @@ async function loadProfile(){
       });
     }
 
-    // 3) Dashboard-style XP (main track only)
+    // 3) Dashboard-style XP
     const token = getToken();
     const payload = decodeJWT(token);
     const userId = Number(payload?.sub || payload?.userId || user.id);
@@ -203,42 +202,37 @@ async function loadProfile(){
       return;
     }
 
-    // Detect primary root prefix from transactions
+    // Detect primary root prefix from transactions; fallback keeps UI sane
     const primaryPrefix = detectPrimaryPrefix(txsAll.map(t => t.path));
-    // If detection fails, we’ll use a heuristic fallback from an earlier example
     const prefix = primaryPrefix || '/madere/div-01';
 
-    // Filter transactions to primary track and remove excluded keywords
-    const txs = txsAll.filter(t => {
+    // Filter out “global” noise (exam/checkpoint/raid/audit) on both datasets
+    const filteredTxsAll = txsAll.filter(t => {
       const p = (t.path||'').toLowerCase();
-      if(!p.startsWith(prefix)) return false;
       if(EXCLUDED_PATH_KEYWORDS.some(k => p.includes(k))) return false;
       return true;
     });
-
-    // Filter passed rows to same primary track (so dates match dashboard)
-    const passedRows = passedRowsAll.filter(p => {
+    const filteredPassedAll = passedRowsAll.filter(p => {
       const path = (p.path||'').toLowerCase();
-      if(!path.startsWith(prefix)) return false;
       if(EXCLUDED_PATH_KEYWORDS.some(k => path.includes(k))) return false;
       return true;
     });
 
-    if (!txs.length) {
-      // No transactions in this track; show 0 but keep UI stable
-      uXP.textContent = '0';
-      svgXPTime.replaceChildren(); noXPTime.hidden = false;
-      svgXPProject.replaceChildren(); noXPProject.hidden = false;
-      console.debug('[XP] No transactions under prefix', prefix, 'Detected from data:', primaryPrefix);
-      return;
-    }
+    // Keep only items belonging to the detected main track prefix
+    const txs = filteredTxsAll.filter(t => (t.path||'').toLowerCase().startsWith(prefix));
+    const passedRows = filteredPassedAll.filter(p => (p.path||'').toLowerCase().startsWith(prefix));
 
-    // Aggregates per objectId from filtered transactions
+    // If this zeroes out, keep filtered (no prefix) to avoid dropping piscine from other roots
+    const txsWork = txs.length ? txs : filteredTxsAll;
+    const passedWork = passedRows.length ? passedRows : filteredPassedAll;
+
+    // Aggregates per objectId from transactions
     const idsFromTx        = new Set();
     const firstTxDateByObj = new Map(); // earliest tx date per object
     const maxXPByObj       = new Map(); // max transaction amount per object
+    const samplePathByObj  = new Map(); // a representative path per object
 
-    txs.forEach(t => {
+    txsWork.forEach(t => {
       const oid = Number(t.objectId);
       if (!Number.isFinite(oid)) return;
       idsFromTx.add(oid);
@@ -249,30 +243,47 @@ async function loadProfile(){
       const ts = new Date(t.createdAt).getTime();
       const prev = firstTxDateByObj.get(oid) ?? Infinity;
       if (ts < prev) firstTxDateByObj.set(oid, ts);
+
+      if (!samplePathByObj.has(oid) && t.path) samplePathByObj.set(oid, t.path.toLowerCase());
     });
 
     const allObjIds = [...idsFromTx];
 
-    // Resolve object types/names for these ids
+    // Resolve object types/names
     const objMeta = allObjIds.length ? await gql(Q_OBJECT_NAMES, { ids: allObjIds }) : { object: [] };
     const typeById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.type || '').toLowerCase()]));
-    const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), o.name || String(o.id)]));
+    const nameById = new Map((objMeta?.object || []).map(o => [Number(o.id), (o.name || '').toLowerCase()]));
 
-    // Keep only ids of included types (project + exercise)
-    const includedIds = allObjIds.filter(id => INCLUDED_TYPES.has(typeById.get(id)));
-
-    // Build pass dates (grade=1) for included ids on same track
+    // Pass dates (grade=1), keep earliest per object
     const passDateByObj = new Map(); // objectId -> ms
-    passedRows.forEach(p => {
+    passedWork.forEach(p => {
       const oid = Number(p.objectId);
       if (!Number.isFinite(oid)) return;
-      if (!includedIds.includes(oid)) return; // only for included object types
       const ts = new Date(p.createdAt).getTime();
       const prev = passDateByObj.get(oid) ?? Infinity;
       if (ts < prev) passDateByObj.set(oid, ts);
     });
 
-    // Compute official entries & total
+    // Inclusion rule that matches your dashboard:
+    //  - include all projects
+    //  - include piscine items (name or path contains "piscine")
+    //  - exclude exam/checkpoint/raid/audit (already removed above)
+    //  - exclude other exercises by default
+    function includeObject(oid){
+      const type = typeById.get(oid);
+      const name = nameById.get(oid) || '';
+      const path = samplePathByObj.get(oid) || '';
+
+      if (INCLUDED_TYPES_ALWAYS.has(type)) return true; // all projects
+      const looksPiscine = name.includes(PISCINE_KEYWORD) || path.includes(PISCINE_KEYWORD);
+      if (looksPiscine) return true;                     // allow piscines
+      // everything else (exercises not piscine) -> exclude
+      return false;
+    }
+
+    const includedIds = allObjIds.filter(includeObject);
+
+    // Build official entries
     const officialEntries = [];
     let officialTotal = 0;
 
@@ -280,7 +291,7 @@ async function loadProfile(){
       const amt = maxXPByObj.get(oid) || 0;
       if (amt <= 0) return;
 
-      // Prefer pass date (grade=1); fallback to earliest tx date so charts render steadily
+      // Prefer pass date; fallback to earliest tx date
       const ts = passDateByObj.get(oid) ?? firstTxDateByObj.get(oid);
       if (ts == null) return;
 
@@ -294,7 +305,7 @@ async function loadProfile(){
 
     uXP.textContent = fmtNum(officialTotal);
 
-    // --- XP over time (by pass/first date) ---
+    // --- XP over time (stacked by pass/first date) ---
     const byDay = new Map();
     officialEntries.forEach(e => {
       const day = toDay(e.passedAt);
@@ -318,10 +329,10 @@ async function loadProfile(){
       svgXPTime.replaceChildren();
     }
 
-    // --- XP by project/exercise ---
+    // --- XP by project/piscine item ---
     let bars = officialEntries.map(e => ({
       id: e.objectId,
-      name: nameById.get(e.objectId) || String(e.objectId),
+      name: (nameById.get(e.objectId) || String(e.objectId)).replace(/\bproject—|\bpiscine—/g, ''),
       sum: e.amount
     }))
     .sort((a,b)=> b.sum - a.sum)
@@ -341,10 +352,10 @@ async function loadProfile(){
       svgXPProject.replaceChildren();
     }
 
-    // Diagnostics — open DevTools console
+    // Diagnostics — open DevTools console to verify
     console.debug('[XP] prefix:', prefix,
-      'txsAll:', txsAll.length, 'txsFiltered:', txs.length,
-      'passedAll:', passedRowsAll.length, 'passedFiltered:', passedRows.length,
+      'txsAll:', txsAll.length, 'txsUsed:', txsWork.length,
+      'passedAll:', passedRowsAll.length, 'passedUsed:', passedWork.length,
       'includedIds:', includedIds.length,
       'officialEntries:', officialEntries.length,
       'officialTotal:', officialTotal);
