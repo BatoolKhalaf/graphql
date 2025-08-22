@@ -30,7 +30,7 @@ const toastEl   = document.getElementById('toast');
 
 /* -------- Dashboard parity switches -------- */
 const EXCLUDE_KEYWORDS = ['exam', 'checkpoint', 'raid', '/audit']; // always drop
-const PISCINE_KEYWORD = 'piscine';                                  // allow piscine root project only
+const PISCINE_KEYWORD  = 'piscine';                                 // detect piscine items
 
 /* ------------------------------ UX helpers --------------------------- */
 function show(view){
@@ -161,7 +161,7 @@ async function loadProfile(){
       });
     }
 
-    // 3) Dashboard-style XP (projects + piscine root project only)
+    // 3) Dashboard-style XP (projects + ONE piscine root)
     const token = getToken();
     const payload = decodeJWT(token);
     const userId = Number(payload?.sub || payload?.userId || user.id);
@@ -230,24 +230,26 @@ async function loadProfile(){
       if (ts < prev) passDateByObj.set(oid, ts);
     });
 
-    // Include rule:
-    //  - include normal projects (type === 'project' and NOT piscine)
-    //  - include piscine ROOT project (type === 'project' and name/path contains 'piscine')
-    //  - exclude everything else (all exercises)
-    function includeObject(oid){
-      const type = typeById.get(oid);
-      const nameLower = (nameLowerById.get(oid) || '');
-      const pathLower = (samplePathByObj.get(oid) || '');
+    // Step 1: include ALL normal projects first
+    let includedIds = allObjIds.filter(oid => typeById.get(oid) === 'project');
 
-      if (type !== 'project') return false; // exercises excluded
+    // Step 2: among all objects that look "piscine", pick ONE with the largest XP
+    const piscineCandidates = allObjIds
+      .filter(oid => {
+        const nameLower = (nameLowerById.get(oid) || '');
+        const pathLower = (samplePathByObj.get(oid) || '');
+        return nameLower.includes(PISCINE_KEYWORD) || pathLower.includes(PISCINE_KEYWORD);
+      })
+      .map(oid => ({ oid, amt: maxXPByObj.get(oid) || 0 }))
+      .filter(x => x.amt > 0)
+      .sort((a,b) => b.amt - a.amt);
 
-      const looksPiscine = nameLower.includes(PISCINE_KEYWORD) || pathLower.includes(PISCINE_KEYWORD);
-      // If it's a project and piscine -> include (root project)
-      // If it's a project and not piscine -> include (normal projects)
-      return true;
+    if (piscineCandidates.length) {
+      const topPiscine = piscineCandidates[0].oid;
+      if (!includedIds.includes(topPiscine)) {
+        includedIds.push(topPiscine);
+      }
     }
-
-    const includedIds = allObjIds.filter(includeObject);
 
     // Build official entries (dedup via max per object)
     const officialEntries = [];
@@ -295,7 +297,7 @@ async function loadProfile(){
       svgXPTime.replaceChildren();
     }
 
-    // --- XP by item (project + piscine root) ---
+    // --- XP by item (project + single Piscine root) ---
     let bars = officialEntries.map(e => ({
       id: e.objectId,
       name: (rawNameById.get(e.objectId) || String(e.objectId)).replace(/\bproject—|\bpiscine—/gi, ''),
