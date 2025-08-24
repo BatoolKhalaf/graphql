@@ -136,6 +136,16 @@ function animateBarGrow(rect, yFrom, hFrom, yTo, hTo, duration=500){
 
 /* ============================== Public API ============================= */
 
+/**
+ * renderLineChart(svg, data, options)
+ * data: [{x:number(timestamp or numeric), y:number, label?:string}]
+ * options:
+ *  - xAccessor, yAccessor (required)
+ *  - titles?: string[]      // tooltip per point (optional)
+ *  - yLabel?: string        // axis label
+ *  - xIsTime?: boolean      // formats x ticks as dates
+ *  - margin?: {t,r,b,l}
+ */
 export function renderLineChart(svg, data, {
   xAccessor,
   yAccessor,
@@ -144,19 +154,113 @@ export function renderLineChart(svg, data, {
   xIsTime = true,
   margin = { t: 18, r: 16, b: 34, l: 46 }
 } = {}) {
-  // unchanged from your version...
-  // (left as-is since the main request was bar chart labels)
+  clearSVG(svg);
+  if (!Array.isArray(data) || !data.length || !xAccessor || !yAccessor) return;
+
+  const [W,H] = sizeOf(svg);
+  const innerW = Math.max(0, W - margin.l - margin.r);
+  const innerH = Math.max(0, H - margin.t - margin.b);
+  if (innerW === 0 || innerH === 0) return;
+
+  // Extents
+  const xs = data.map(xAccessor);
+  const ys = data.map(yAccessor);
+  const [x0,x1] = niceExtent(Math.min(...xs), Math.max(...xs));
+  const [y0,y1] = niceExtent(Math.min(...ys, 0), Math.max(...ys)); // include zero if below min
+  const sx = scaleLinear([x0,x1], [margin.l, margin.l + innerW]);
+  const sy = scaleLinear([y0,y1], [margin.t + innerH, margin.t]);
+
+  // Frame & grid
+  el(svg,'rect',{ x:margin.l, y:margin.t, width:innerW, height:innerH, fill:'none', stroke:'#232737' });
+
+  const yTicks = niceTicks(y0, y1, 5);
+  yTicks.forEach(v=>{
+    const y = sy(v);
+    el(svg,'line',{ x1:margin.l, y1:y, x2:margin.l+innerW, y2:y, stroke:'#232737' });
+    const txt = el(svg,'text',{ x: margin.l - 8, y: y + 3, 'text-anchor':'end', 'font-size':'10', fill:'#9aa4af' });
+    txt.textContent = fmtShort(v);
+  });
+
+  // x ticks: choose ~6 nicely spaced ticks
+  const xTicksCount = Math.min(6, Math.max(2, Math.floor(innerW / 100)));
+  const xTicks = niceTicks(x0, x1, xTicksCount);
+  xTicks.forEach(v=>{
+    const x = sx(v);
+    el(svg,'line',{ x1:x, y1:margin.t, x2:x, y2:margin.t+innerH, stroke:'rgba(255,255,255,0.04)' });
+    const txt = el(svg,'text',{ x, y: margin.t + innerH + 14, 'text-anchor':'middle', 'font-size':'10', fill:'#9aa4af' });
+    txt.textContent = xIsTime ? fmtDate(v) : fmtShort(v);
+  });
+
+  // Optional Y axis label
+  if (yLabel) {
+    const t = el(svg,'text',{ x: margin.l - 34, y: margin.t + innerH/2, 'text-anchor':'middle', 'font-size':'11', fill:'#9aa4af', transform:`rotate(-90 ${margin.l - 34} ${margin.t + innerH/2})` });
+    t.textContent = yLabel;
+  }
+
+  // Area gradient (defs scoped per chart)
+  const gid = 'grad-' + Math.random().toString(36).slice(2,8);
+  const defs = el(svg,'defs');
+  const grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+  grad.setAttribute('id', gid);
+  grad.setAttribute('x1','0'); grad.setAttribute('y1','0');
+  grad.setAttribute('x2','0'); grad.setAttribute('y2','1');
+  const stop1 = document.createElementNS(grad.namespaceURI, 'stop');
+  stop1.setAttribute('offset','0%'); stop1.setAttribute('stop-color','#6ab0ff'); stop1.setAttribute('stop-opacity','0.35');
+  const stop2 = document.createElementNS(grad.namespaceURI, 'stop');
+  stop2.setAttribute('offset','100%'); stop2.setAttribute('stop-color','#6ab0ff'); stop2.setAttribute('stop-opacity','0.02');
+  grad.append(stop1, stop2); defs.appendChild(grad);
+
+  // Path & area (with slight smoothing)
+  const linePts = data.map(p => [ sx(xAccessor(p)), sy(yAccessor(p)) ]);
+  let d = '';
+  for (let i=0;i<linePts.length;i++){
+    const [x,y] = linePts[i];
+    if (i===0) d += `M${x},${y}`;
+    else {
+      const [px,py] = linePts[i-1];
+      const mx = (x + px)/2;
+      d += ` Q${px},${py} ${mx},${(py+y)/2} T${x},${y}`; // gentle smooth
+    }
+  }
+  const path = el(svg,'path',{ d, fill:'none', stroke:'#6ab0ff', 'stroke-width':2 });
+  animatePathDraw(path, 900);
+
+  const areaD = `${d} L ${margin.l + innerW},${margin.t + innerH} L ${margin.l},${margin.t + innerH} Z`;
+  el(svg,'path',{ d: areaD, fill:`url(#${gid})`, opacity:'0.9' });
+
+  // Points & interactive tooltip zone
+  const hitRadius = Math.max(12, Math.min(24, innerW / Math.max(6, data.length)));
+  data.forEach((p,i)=>{
+    const x = sx(xAccessor(p));
+    const y = sy(yAccessor(p));
+    const dot = el(svg,'circle',{ cx:x, cy:y, r:3.4, fill:'#6ab0ff' });
+    addTitle(dot, titles?.[i] ?? `${xIsTime ? fmtDate(xAccessor(p)) : xAccessor(p)} • ${fmtInt(yAccessor(p))}`);
+    // larger invisible hit area for easier hover
+    const hot = el(svg,'circle',{ cx:x, cy:y, r:hitRadius, fill:'transparent' });
+    hot.addEventListener('pointerenter', (e)=>{
+      showTip(`<strong>${xIsTime ? fmtDate(xAccessor(p)) : xAccessor(p)}</strong><br>${fmtInt(yAccessor(p))}`, e.clientX, e.clientY);
+    });
+    hot.addEventListener('pointermove', (e)=> showTip(tooltip.innerHTML, e.clientX, e.clientY));
+    hot.addEventListener('pointerleave', hideTip);
+  });
 }
 
 /**
  * renderBarChart(svg, data, options)
+ * data: array of items
+ * options:
+ *  - xAccessor(d): label string
+ *  - yAccessor(d): number
+ *  - labelAccessor?: displayed label (default xAccessor)
+ *  - yLabel?: string
+ *  - margin?: {t,r,b,l}
  */
 export function renderBarChart(svg, data, {
   xAccessor,
   yAccessor,
   labelAccessor = xAccessor,
   yLabel,
-  margin = { t: 18, r: 16, b: 64, l: 46 } // bump bottom margin slightly
+  margin = { t: 18, r: 16, b: 64, l: 46 } // bumped bottom margin
 } = {}) {
   clearSVG(svg);
   if (!Array.isArray(data) || !data.length || !xAccessor || !yAccessor) return;
@@ -199,7 +303,7 @@ export function renderBarChart(svg, data, {
     const rect = el(svg,'rect',{ x, y: margin.t + innerH, width: band.bandwidth*0.9, height: 0, fill:'#6ab0ff' });
     animateBarGrow(rect, margin.t + innerH, 0, y, h, 520);
 
-    // Value label
+    // Value label (inside or above)
     if (h > 16) {
       const val = el(svg,'text', { x: x + band.bandwidth*0.45, y: y + 12, 'text-anchor':'middle', 'font-size':'10', fill:'#00142b', opacity:'0.95', fontWeight:'700' });
       val.textContent = fmtShort(v);
@@ -216,7 +320,7 @@ export function renderBarChart(svg, data, {
       'text-anchor':'middle',
       'font-size':'10',
       fill:'#9aa4af',
-      dy: '0.6em'  // 👈 shift further down
+      dy: '0.6em'  // shift further down
     });
     tx.textContent = label;
     if (labelAngle) {
