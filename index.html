@@ -65,7 +65,19 @@
           <div><dt>Login</dt><dd id="u-login">—</dd></div>
           <div><dt>Email</dt><dd id="u-email">—</dd></div>
           <div><dt>User ID</dt><dd id="u-id">—</dd></div>
-          <div><dt>Total XP</dt><dd id="u-xp">—</dd></div>
+          <div>
+            <dt>Total XP</dt>
+            <dd id="u-xp-wrap">
+              <span id="u-xp">—</span>
+              <!-- Info icon with native tooltip. Use &#10; for line breaks in title -->
+              <span
+                class="info"
+                aria-label="What’s included in Total XP"
+                title="Includes:&#10;• All projects&#10;• One Piscine root project (largest)&#10;• Exam micro-exercises (≤300B)&#10;Excludes:&#10;• Checkpoints&#10;• Raids&#10;• Audits"
+                style="display:inline-block; margin-left:6px; cursor:help;"
+              >ⓘ</span>
+            </dd>
+          </div>
         </dl>
       </div>
 
