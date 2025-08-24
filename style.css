@@ -201,3 +201,27 @@ svg, .chart{
 
 .blobs[data-density="low"]  .blob{ opacity:.45 }
 .blobs[data-density="high"] .blob{ opacity:.66 }
+
+.xp-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 1.2rem;
+}
+
+.info {
+  display: inline-block;
+  font-size: 0.9rem;
+  color: var(--muted);
+  cursor: help;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 1.4em;
+  height: 1.4em;
+  line-height: 1.4em;
+  text-align: center;
+}
+.info:hover {
+  background: var(--panel);
+  color: var(--accent);
+}
